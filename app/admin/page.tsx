@@ -8,10 +8,6 @@ export default function AdminPage() {
     const router = useRouter();
     const [loading, setLoading] = useState(false);
     
-    // SECURITY
-    const [isUnlocked, setIsUnlocked] = useState(false);
-    const [pin, setPin] = useState('');
-    const ADMIN_PIN = "374545"; 
 
     // FORM STATE
     const [qType, setQType] = useState<'multiple_choice' | 'short_answer'>('multiple_choice');
@@ -30,7 +26,20 @@ export default function AdminPage() {
 
     const checkUser = async () => {
         const { data: { user } } = await supabase.auth.getUser();
-        if (!user) router.push('/login');
+        
+        // 1. Check if logged in
+        if (!user) {
+            router.push('/login');
+            return;
+        }
+
+        // 2. Check if it is YOU (Replace with your actual email)
+        const MY_EMAIL = "erik.engstrom@stud.ki.se"; 
+        
+        if (user.email !== MY_EMAIL) {
+            alert("Åtkomst nekad! Endast administratörer får vara här.");
+            router.push('/'); // Send them back home
+        }
     };
 
     const fetchCategories = async () => {
@@ -95,24 +104,6 @@ export default function AdminPage() {
         }
         setLoading(false);
     };
-
-    const handleUnlock = (e: React.FormEvent) => {
-        e.preventDefault();
-        if (pin === ADMIN_PIN) setIsUnlocked(true);
-        else alert("Fel lösenord!");
-    };
-
-    if (!isUnlocked) return (
-        <main className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center p-4">
-            <div className="bg-white dark:bg-gray-800 p-8 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 w-full max-w-md text-center">
-                <h1 className="text-2xl font-bold mb-6 text-gray-900 dark:text-white">Admin Login 🔒</h1>
-                <form onSubmit={handleUnlock} className="space-y-4">
-                    <input type="password" value={pin} onChange={e => setPin(e.target.value)} className="w-full p-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white text-center text-lg tracking-widest" placeholder="PIN" autoFocus />
-                    <button type="submit" className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold">Lås upp</button>
-                </form>
-            </div>
-        </main>
-    );
 
     return (
         <main className="min-h-screen bg-gray-50 dark:bg-gray-900 py-10 px-4">
