@@ -21,26 +21,23 @@ export type Question = {
     question_type: 'multiple_choice' | 'short_answer';
 }
 
-// APP MODES
 type Mode = 'dashboard' | 'category-lobby' | 'setup' | 'exam' | 'statistics';
 
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
+  // NEW STATE: Track if user is guest
+  const [isGuest, setIsGuest] = useState(false);
+  
   const router = useRouter();
 
-  // APP STATES
   const [mode, setMode] = useState<Mode>('dashboard');
-  
-  // MODAL STATE
   const [modalOpen, setModalOpen] = useState(false);
   const [modalMessage, setModalMessage] = useState({ title: '', body: '' });
 
-  // DATA STATES
   const [categories, setCategories] = useState<string[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [questionStats, setQuestionStats] = useState<Record<number, QuestionStat>>({});
   
-  // NAVIGATION STATES
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null); 
   const [currentSettings, setCurrentSettings] = useState<ExamSettings | null>(null);
 
@@ -49,35 +46,37 @@ export default function Home() {
       setModalOpen(true);
   };
 
-  // 1. DATA FETCHING
   const fetchData = useCallback(async () => {
-      // A. User
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { router.push('/login'); return; }
       
-      const { data: profile } = await supabase.from('profiles').select('display_name').eq('id', user.id).single();
-      setUser({ ...user, display_name: profile?.display_name || user.email } as any);
+      // CHECK IF GUEST
+      if (user.is_anonymous) {
+          setIsGuest(true);
+          // Guests don't have profiles, so we manually set display name
+          setUser({ ...user, display_name: "Gäst" } as any);
+      } else {
+          setIsGuest(false);
+          const { data: profile } = await supabase.from('profiles').select('display_name').eq('id', user.id).single();
+          setUser({ ...user, display_name: profile?.display_name || user.email } as any);
+      }
 
-      // B. Questions
       const { data: qData } = await supabase.from('questions').select('*');
       if (qData) {
           const uniqueCats = [...new Set(qData.map(item => item.category))];
           setCategories(uniqueCats);
           
-          // Fisher-Yates Shuffle for Options on Load (Initial formatting)
           const formattedQuestions = qData.map(q => {
-             // We don't shuffle here, we shuffle when exam starts
              return {...q, options: q.options as string[]};
           });
           setQuestions(formattedQuestions);
 
-          // Initialize Stats Map
           const initialStats: Record<number, QuestionStat> = {};
           formattedQuestions.forEach(q => {
               initialStats[q.id] = { questionId: q.id, attempts: 0, correctCount: 0 };
           });
 
-          // C. History
+          // Fetch History (Guests can fetch their own temp history)
           const { data: history } = await supabase
               .from('user_answers')
               .select('question_id, is_correct')
@@ -100,8 +99,6 @@ export default function Home() {
         fetchData();
     }
   }, [mode, fetchData]); 
-
-  // --- HANDLERS ---
 
   const handleCategoryClick = (category: string) => {
       setSelectedCategory(category);
@@ -154,10 +151,7 @@ export default function Home() {
     }
 
     if (pool.length > 0) {
-        // 1. Shuffle Questions
         const shuffledQuestions = [...pool].sort(() => 0.5 - Math.random());
-
-        // 2. Shuffle Options
         const finalizedExam = shuffledQuestions.map(q => {
             if (q.question_type === 'multiple_choice') {
                 const opts = [...q.options];
@@ -182,37 +176,41 @@ export default function Home() {
       router.push('/login');
   }
 
+  // --- NAME BUTTON LOGIC ---
+  const handleNameClick = () => {
+      if (isGuest) {
+          // If guest, send them to login/signup
+          router.push('/login');
+      } else {
+          // If real user, go to profile
+          router.push('/profile');
+      }
+  }
+
   if (!user) return <div className="p-10 text-center dark:bg-gray-900 dark:text-white min-h-screen">Laddar MedQ...</div>;
 
   return (
     <main className="min-h-screen bg-gray-50 dark:bg-gray-900 py-6 px-4 transition-colors duration-200">
       
-      {/* GLOBAL MODAL */}
       <Modal 
         isOpen={modalOpen} 
         onClose={() => setModalOpen(false)}
         title={modalMessage.title}
-        footer={
-            <button onClick={() => setModalOpen(false)} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold">
-                OK
-            </button>
-        }
+        footer={<button onClick={() => setModalOpen(false)} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold">OK</button>}
       >
         <p className="text-gray-700 dark:text-gray-300">{modalMessage.body}</p>
       </Modal>
 
-      {/* HEADER */}
       {(mode === 'dashboard' || mode === 'statistics') && (
         <header className="max-w-5xl mx-auto flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
             <h1 className="text-2xl font-extrabold text-blue-900 dark:text-blue-400">MedQ</h1>
             
             <div className="flex flex-wrap justify-center items-center gap-3">
-                {/* BUG REPORT BUTTON */}
                 <a 
                     href="mailto:erik.engstrom@stud.ki.se?subject=MedQ%20Bug%20Report"
                     className="text-xs font-medium text-gray-500 hover:text-red-500 border border-gray-200 dark:border-gray-700 hover:border-red-300 px-3 py-1 rounded transition-colors"
                 >
-                    🐛 Kontakta mig eller rapportera ett fel
+                    🐛 Rapportera fel
                 </a>
 
                 {mode !== 'statistics' && (
@@ -221,16 +219,22 @@ export default function Home() {
                     </button>
                 )}
                 
-                <button onClick={() => router.push('/profile')} className="text-sm font-semibold text-gray-700 dark:text-gray-200 hover:text-blue-600">
-                    {(user as any).display_name} ⚙️
+                {/* NAME BUTTON - Now handles Guest Logic */}
+                <button 
+                    onClick={handleNameClick}
+                    className="text-sm font-semibold text-gray-700 dark:text-gray-200 hover:text-blue-600 flex items-center gap-2"
+                >
+                    {(user as any).display_name} {isGuest ? '👤' : '⚙️'}
                 </button>
                 
-                <button onClick={handleLogout} className="text-xs text-red-600 border border-red-200 px-3 py-1 rounded hover:bg-red-50">Logga ut</button>
+                <button onClick={handleLogout} className="text-xs text-red-600 border border-red-200 px-3 py-1 rounded hover:bg-red-50">
+                    Logga ut
+                </button>
             </div>
         </header>
       )}
 
-      {/* 1. DASHBOARD */}
+      {/* DASHBOARD */}
       {mode === 'dashboard' && (
          <div className="max-w-4xl mx-auto animate-fade-in">
             <h2 className="text-3xl font-bold text-gray-800 dark:text-white mb-8 text-center">Vad vill du plugga idag?</h2>
@@ -257,9 +261,7 @@ export default function Home() {
                                 <span className="font-bold text-gray-700 dark:text-gray-200 group-hover:text-blue-700 dark:group-hover:text-blue-300">
                                     {cat}
                                 </span>
-                                <span className="text-gray-400 dark:text-gray-500 group-hover:translate-x-1 transition-transform">
-                                    →
-                                </span>
+                                <span className="text-gray-400 dark:text-gray-500 group-hover:translate-x-1 transition-transform">→</span>
                             </button>
                         ))}
                     </div>
@@ -268,7 +270,7 @@ export default function Home() {
          </div>
       )}
 
-      {/* 2. CATEGORY LOBBY */}
+      {/* CATEGORY LOBBY */}
       {mode === 'category-lobby' && selectedCategory && (
           <CategoryTrainer 
               category={selectedCategory}
@@ -280,16 +282,17 @@ export default function Home() {
           />
       )}
 
-      {/* 3. STATISTICS PAGE */}
+      {/* STATISTICS - Now gets isGuest prop */}
       {mode === 'statistics' && (
           <Statistics 
              questionStats={questionStats} 
              allQuestions={questions} 
              onBack={() => setMode('dashboard')} 
+             isGuest={isGuest} // <--- Pass the guest status
           />
       )}
 
-      {/* 4. SETUP */}
+      {/* SETUP */}
       {mode === 'setup' && (
           <ExamSetup 
             categories={categories} 
@@ -299,7 +302,7 @@ export default function Home() {
           /> 
       )}
 
-      {/* 5. EXAM RUNNER */}
+      {/* EXAM RUNNER */}
       {mode === 'exam' && currentSettings && (
         <ExamRunner 
             questions={questions} 
