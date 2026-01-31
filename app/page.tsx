@@ -27,6 +27,8 @@ export default function Home() {
   const [isGuest, setIsGuest] = useState(false);
   const router = useRouter();
 
+  const [bookmarks, setBookmarks] = useState<Set<number>>(new Set());
+
   const [mode, setMode] = useState<Mode>('dashboard');
   const [loadingQuestions, setLoadingQuestions] = useState(false);
   
@@ -72,11 +74,42 @@ export default function Home() {
           });
           setQuestionStats(statsMap);
       }
+
+      if (user) {
+          const { data: bData } = await supabase
+              .from('user_bookmarks')
+              .select('question_id')
+              .eq('user_id', user.id);
+          
+          if (bData) {
+              const bSet = new Set(bData.map(b => b.question_id));
+              setBookmarks(bSet);
+          }
+      }
   }, [router]);
 
   useEffect(() => { fetchUserData(); }, [fetchUserData]);
 
   // --- 2. EXAM HANDLER (Uses new Service) ---
+
+  // NEW HANDLER: Toggle Bookmark
+  const handleToggleBookmark = async (questionId: number) => {
+      if (!user) return;
+
+      const newBookmarks = new Set(bookmarks);
+      
+      if (newBookmarks.has(questionId)) {
+          // Remove
+          newBookmarks.delete(questionId);
+          await supabase.from('user_bookmarks').delete().match({ user_id: user.id, question_id: questionId });
+      } else {
+          // Add
+          newBookmarks.add(questionId);
+          await supabase.from('user_bookmarks').insert({ user_id: user.id, question_id: questionId });
+      }
+      setBookmarks(newBookmarks);
+  };
+
   const handleExamRequest = async (settings: ExamSettings, limit: number, hardMode: boolean) => {
       setLoadingQuestions(true);
       
@@ -164,7 +197,15 @@ export default function Home() {
 
       {mode === 'statistics' && <Statistics questionStats={questionStats} allQuestions={questions} onBack={() => setMode('dashboard')} isGuest={isGuest} />}
       {mode === 'setup' && <ExamSetup categories={categories} defaultCategory={selectedCategory} onStart={handleStartCustom} onBack={() => setMode('dashboard')} />}
-      {mode === 'exam' && currentSettings && <ExamRunner questions={questions} settings={currentSettings} onExit={() => setMode('dashboard')} />}
+      {mode === 'exam' && currentSettings && (
+        <ExamRunner 
+            questions={questions} 
+            settings={currentSettings} 
+            onExit={() => setMode('dashboard')}
+            bookmarks={bookmarks}              // <--- ADD THIS
+            onToggleBookmark={handleToggleBookmark} // <--- ADD THIS
+        />
+    )}
       
       <div className="fixed bottom-2 left-4 text-[10px] text-gray-300 dark:text-gray-700 font-mono pointer-events-none select-none z-50">
           {APP_VERSION}

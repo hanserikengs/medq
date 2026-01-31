@@ -1,5 +1,4 @@
 export const TEXTS = {
-  appVersion: "v0.10.1-beta",
   // ... existing headers, greetings, dashboard, quickHub ...
   
   // ADD THIS SECTION:
@@ -14,9 +13,24 @@ export const TEXTS = {
       custom: { title: "Anpassad", desc: "Välj antal och tid själv" }
     }
   },
-
+  
   // ... existing stats, loading, alerts ...
   stats: {
+
+    game: {
+    bookmark: "Spara fråga",
+    bookmarked: "Sparad",
+    report: "Rapportera fel",
+    reportModal: {
+      title: "Rapportera Fråga",
+      desc: "Vad är fel med denna fråga?",
+      placeholder: "T.ex. Fel svar, dålig bild, stavfel...",
+      submit: "Skicka rapport",
+      cancel: "Avbryt",
+      success: "Tack! Vi kollar på det."
+    }
+    },
+
     // ... (keep existing stats text) ...
     title: "Min Statistik",
     back: "← Tillbaka",

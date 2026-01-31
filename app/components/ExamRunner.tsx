@@ -1,268 +1,241 @@
 'use client'
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import QuestionCard from './QuestionCard';
-import { ExamSettings } from './ExamSetup';
-import { Question } from '../lib/types';
+import Modal from './Modal'; 
 import { supabase } from '../lib/supabaseClient';
+import { Question } from '../lib/types'; 
+import { ExamSettings } from './ExamSetup';
 
 interface Props {
-    questions: Question[];
-    settings: ExamSettings;
-    onExit: () => void;
+  questions: Question[];
+  settings: ExamSettings;
+  onExit: () => void;
+  bookmarks: Set<number>;
+  onToggleBookmark: (id: number) => void;
 }
 
-export default function ExamRunner({ questions, settings, onExit }: Props) {
-    const [currentIndex, setCurrentIndex] = useState(0);
-    const [answers, setAnswers] = useState<Record<number, string>>({});
-    const [checkedQuestions, setCheckedQuestions] = useState<Record<number, boolean>>({});
-    
-    // NEW: Track overruled questions (questions user forced to be correct)
-    const [overruledQuestions, setOverruledQuestions] = useState<Record<number, boolean>>({});
+// Helper to track the state of every question
+type QuestionState = {
+    selectedOption: string | null;
+    isAnswered: boolean;
+    isCorrect: boolean;
+}
 
-    const [timeElapsed, setTimeElapsed] = useState(0);
-    const [isFinished, setIsFinished] = useState(false);
+export default function ExamRunner({ questions, settings, onExit, bookmarks, onToggleBookmark }: Props) {
+  const [currentIndex, setCurrentIndex] = useState(0);
+  
+  // GLOBAL STATE: Track every question's status
+  const [history, setHistory] = useState<Record<number, QuestionState>>({});
+  
+  const [score, setScore] = useState(0);
+  const [isFinished, setIsFinished] = useState(false);
+  
+  // UI STATES
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [overviewOpen, setOverviewOpen] = useState(false);
+  const [reportReason, setReportReason] = useState('');
+  const [isReporting, setIsReporting] = useState(false);
 
-    useEffect(() => {
-        if (!settings.timed || isFinished) return;
-        const timer = setInterval(() => setTimeElapsed(prev => prev + 1), 1000);
-        return () => clearInterval(timer);
-    }, [settings.timed, isFinished]);
+  // CURRENT QUESTION HELPERS
+  const currentQ = questions[currentIndex];
+  const currentState = history[currentIndex] || { selectedOption: null, isAnswered: false, isCorrect: false };
+  const showFeedback = currentState.isAnswered && settings.instantFeedback;
 
-    const formatTime = (seconds: number) => {
-        const mins = Math.floor(seconds / 60);
-        const secs = seconds % 60;
-        return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
-    };
+  // 1. SELECT OPTION (Just visual update)
+  const handleOptionSelect = (answer: string) => {
+      if (currentState.isAnswered) return; // Prevent changing if already locked in
+      
+      setHistory(prev => ({
+          ...prev,
+          [currentIndex]: { ...prev[currentIndex], selectedOption: answer }
+      }));
+  };
 
-    const handleOptionSelect = (option: string) => {
-        if (settings.instantFeedback && checkedQuestions[currentIndex]) return; 
-        setAnswers(prev => ({ ...prev, [currentIndex]: option }));
+  // 2. CONFIRM ANSWER (Lock it in)
+  const handleConfirmAnswer = async () => {
+      const answer = currentState.selectedOption;
+      if (!answer) return;
 
-        // Only auto-advance for Multiple Choice
-        if (!settings.instantFeedback && questions[currentIndex].question_type === 'multiple_choice') {
-            setTimeout(() => {
-                if (currentIndex < questions.length - 1) {
-                    setCurrentIndex(prev => prev + 1);
-                }
-            }, 300);
-        }
-    };
+      const isCorrect = answer === currentQ.correct_answer;
+      if (isCorrect) setScore(s => s + 1);
 
-    const handleCheckAnswer = () => {
-        setCheckedQuestions(prev => ({ ...prev, [currentIndex]: true }));
-    };
+      // Save to DB
+      if (settings.recordStats) {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user) {
+             await supabase.from('user_answers').insert({
+                 user_id: user.id,
+                 question_id: currentQ.id,
+                 is_correct: isCorrect
+             });
+          }
+      }
 
-    // NEW: User claims they were right
-    const handleOverrule = () => {
-        setOverruledQuestions(prev => ({ ...prev, [currentIndex]: true }));
-        // We modify the answer locally to a special flag or just handle it in scoring
-    };
+      // Update State to "Answered"
+      setHistory(prev => ({
+          ...prev,
+          [currentIndex]: { 
+              selectedOption: answer, 
+              isAnswered: true, 
+              isCorrect: isCorrect 
+          }
+      }));
+  };
 
-    const jumpToQuestion = (index: number) => {
-        if (!settings.allowBacktracking && index < currentIndex) return;
-        if (index < 0 || index >= questions.length) return;
-        setCurrentIndex(index);
-    };
+  // NAVIGATION HANDLERS
+  const handleNext = () => {
+      if (currentIndex < questions.length - 1) {
+          setCurrentIndex(prev => prev + 1);
+      } else {
+          setIsFinished(true);
+      }
+  };
 
-    const finishExam = async () => {
-        setIsFinished(true);
-        if (!settings.recordStats) return;
+  const handlePrev = () => {
+      if (currentIndex > 0) {
+          setCurrentIndex(prev => prev - 1);
+      }
+  };
 
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) return;
+  const handleJumpTo = (index: number) => {
+      setCurrentIndex(index);
+      setOverviewOpen(false);
+  };
 
-        const payload = questions.map((q, index) => {
-            const selected = answers[index];
-            if (!selected) return null;
+  const handleReportSubmit = async () => {
+      if (!reportReason.trim()) return;
+      setIsReporting(true);
+      
+      const { error } = await supabase.from('question_reports').insert({
+          question_id: currentQ.id,
+          reason: reportReason,
+          status: 'pending'
+      });
 
-            // SCORING LOGIC
-            let isCorrect = false;
-            
-            if (overruledQuestions[index]) {
-                isCorrect = true; // User overruled
-            } else if (q.question_type === 'multiple_choice') {
-                isCorrect = selected === q.correct_answer;
-            } else {
-                // Fuzzy matching for Short Answer
-                // Split correct answer by comma, trim, lowercase check
-                const possibilities = q.correct_answer.split(',').map(s => s.trim().toLowerCase());
-                isCorrect = possibilities.includes(selected.toLowerCase().trim());
-            }
+      setIsReporting(false);
+      setReportModalOpen(false);
+      setReportReason('');
+      
+      if (error) alert("Kunde inte skicka rapport.");
+      else alert("Tack! Rapporten har skickats.");
+  };
 
-            return {
-                user_id: user.id,
-                question_id: q.id,
-                category: q.category,
-                is_correct: isCorrect,
-                created_at: new Date().toISOString()
-            };
-        }).filter(item => item !== null);
+  if (isFinished) {
+      return (
+          <div className="text-center p-10 max-w-2xl mx-auto">
+              <h2 className="text-3xl font-bold mb-4">Bra jobbat!</h2>
+              <p className="mb-6 text-xl">Du fick {score} av {questions.length} rätt.</p>
+              <button onClick={onExit} className="px-6 py-3 bg-blue-600 text-white rounded-xl font-bold shadow-lg hover:bg-blue-700 transition-all">Tillbaka till menyn</button>
+          </div>
+      )
+  }
 
-        if (payload.length > 0) {
-            await supabase.from('user_answers').insert(payload);
-        }
-    };
+  if (!currentQ) return <div>Laddar...</div>;
+  const isBookmarked = bookmarks ? bookmarks.has(currentQ.id) : false;
 
-    // CALCULATE SCORE HELPER
-    const calculateIsCorrect = (idx: number) => {
-        if (overruledQuestions[idx]) return true;
-        const q = questions[idx];
-        const ans = answers[idx];
-        if (!ans) return false;
+  return (
+    <div className="max-w-3xl mx-auto animate-fade-in pb-32 pt-6 px-4 relative">
+      
+      {/* OVERVIEW MODAL (The "Indexing") */}
+      <Modal isOpen={overviewOpen} onClose={() => setOverviewOpen(false)} title="Översikt" footer={<button onClick={() => setOverviewOpen(false)} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">Stäng</button>}>
+          <div className="grid grid-cols-5 gap-2 max-h-[60vh] overflow-y-auto p-1">
+              {questions.map((_, idx) => {
+                  const state = history[idx];
+                  let bg = "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300";
+                  if (idx === currentIndex) bg = "ring-2 ring-blue-500 bg-white dark:bg-gray-800";
+                  else if (state?.isAnswered) bg = state.isCorrect ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200" : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200";
+                  
+                  return (
+                      <button key={idx} onClick={() => handleJumpTo(idx)} className={`p-2 rounded-lg text-sm font-bold transition-all ${bg}`}>
+                          {idx + 1}
+                      </button>
+                  )
+              })}
+          </div>
+      </Modal>
 
-        if (q.question_type === 'multiple_choice') {
-            return ans === q.correct_answer;
-        } else {
-            const possibilities = q.correct_answer.split(',').map(s => s.trim().toLowerCase());
-            return possibilities.includes(ans.toLowerCase().trim());
-        }
-    };
-
-    if (isFinished) {
-        const score = questions.reduce((acc, q, idx) => {
-            return acc + (calculateIsCorrect(idx) ? 1 : 0);
-        }, 0);
-
-        return (
-            <div className="max-w-2xl mx-auto bg-white dark:bg-gray-800 p-8 rounded-xl shadow-lg text-center animate-fade-in border dark:border-gray-700">
-                <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">Tentamen Slutförd!</h2>
-                <div className="text-6xl font-extrabold text-blue-600 dark:text-blue-400 mb-2">
-                    {Math.round((score / questions.length) * 100)}%
-                </div>
-                <p className="text-lg text-gray-700 dark:text-gray-300 mb-6">
-                    Du svarade rätt på <span className="font-bold">{score}</span> av <span className="font-bold">{questions.length}</span> frågor.
-                </p>
-                <button onClick={onExit} className="px-8 py-3 bg-gray-900 dark:bg-blue-600 text-white rounded-lg font-bold hover:bg-black dark:hover:bg-blue-700 transition-colors">
-                    Tillbaka till menyn
-                </button>
-            </div>
-        );
-    }
-
-    const currentQ = questions[currentIndex];
-    const isChecked = checkedQuestions[currentIndex];
-    const isCorrect = calculateIsCorrect(currentIndex);
-
-    return (
-        <div className="max-w-3xl mx-auto">
-            {/* Header */}
-            <div className="flex justify-between items-center mb-6 bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700">
-                <div className="flex items-center gap-4">
-                    <span className="font-bold text-gray-700 dark:text-gray-200">
-                        Fråga {currentIndex + 1} <span className="text-gray-400 font-normal">/ {questions.length}</span>
-                    </span>
-                    {settings.timed && (
-                        <span className="font-mono text-blue-600 bg-blue-50 dark:bg-blue-900 dark:text-blue-200 px-2 py-1 rounded text-sm font-bold">
-                            {formatTime(timeElapsed)}
-                        </span>
-                    )}
-                </div>
-                <button onClick={onExit} className="text-gray-400 hover:text-red-600 dark:hover:text-red-400 text-sm font-medium transition-colors">
-                    Avbryt
-                </button>
-            </div>
-
-            {/* Question Card */}
-            <QuestionCard 
-                key={currentIndex}
-                question={currentQ}
-                selectedOption={answers[currentIndex] || null}
-                isAnswered={settings.instantFeedback ? isChecked : false} // Only lock UI if in instant feedback mode
-                showFeedback={settings.instantFeedback ? isChecked : false}
-                onSelect={handleOptionSelect}
-            />
-
-            {/* OVERRULE BUTTON (Only shows if: Instant Mode + Checked + Wrong + Short Answer) */}
-            {settings.instantFeedback && isChecked && !isCorrect && currentQ.question_type === 'short_answer' && !overruledQuestions[currentIndex] && (
-                <div className="mb-6 bg-yellow-50 dark:bg-yellow-900/20 p-4 rounded-xl border border-yellow-200 dark:border-yellow-700 flex justify-between items-center animate-fade-in">
-                    <span className="text-yellow-800 dark:text-yellow-200 text-sm font-medium">Tycker du att du hade rätt?</span>
-                    <button 
-                        onClick={handleOverrule}
-                        className="px-4 py-2 bg-yellow-100 hover:bg-yellow-200 dark:bg-yellow-800 dark:hover:bg-yellow-700 text-yellow-900 dark:text-yellow-100 text-sm font-bold rounded-lg transition-colors"
-                    >
-                        ✅ Jag hade rätt (Overrule)
-                    </button>
-                </div>
-            )}
-            
-            {/* Success Message for Overrule */}
-            {overruledQuestions[currentIndex] && (
-                 <div className="mb-6 bg-green-50 dark:bg-green-900/20 p-4 rounded-xl border border-green-200 dark:border-green-700 text-center animate-fade-in">
-                    <span className="text-green-800 dark:text-green-200 text-sm font-bold">✅ Svaret godkänt manuellt.</span>
-                </div>
-            )}
-
-            {/* ACTION BAR */}
-            <div className="mt-6 flex justify-end items-center gap-3">
-                {settings.instantFeedback ? (
-                    !isChecked ? (
-                        <button 
-                            onClick={handleCheckAnswer}
-                            disabled={!answers[currentIndex]}
-                            className="px-8 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                        >
-                            Rätta Svar
-                        </button>
-                    ) : (
-                        <button 
-                            onClick={() => currentIndex < questions.length - 1 ? setCurrentIndex(prev => prev + 1) : finishExam()}
-                            className="px-8 py-3 bg-gray-900 dark:bg-gray-700 text-white rounded-xl font-bold hover:bg-black dark:hover:bg-gray-600 shadow-lg transition-all"
-                        >
-                            {currentIndex === questions.length - 1 ? 'Slutför' : 'Nästa →'}
-                        </button>
-                    )
-                ) : (
-                    <button 
-                         onClick={() => currentIndex < questions.length - 1 ? setCurrentIndex(prev => prev + 1) : finishExam()}
-                         className="px-6 py-3 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white font-semibold"
-                    >
-                        {currentIndex === questions.length - 1 ? 'Lämna in' : 'Nästa'}
-                    </button>
-                )}
-            </div>
-
-            {/* NAVIGATION GRID */}
-            {settings.allowBacktracking && (
-                <div className="mt-10 pt-6 border-t border-gray-200 dark:border-gray-700 flex items-center justify-center gap-4">
-                     <button onClick={() => jumpToQuestion(currentIndex - 1)} disabled={currentIndex === 0} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-30 transition-colors text-gray-600 dark:text-gray-300">
-                        ←
-                    </button>
-                    <div className="flex flex-wrap gap-2 justify-center max-w-lg">
-                        {questions.map((_, idx) => {
-                            const isAnswered = answers[idx] !== undefined;
-                            const isCurrent = idx === currentIndex;
-                            const isWrong = isChecked && !calculateIsCorrect(idx);
-                            
-                            let btnClass = "w-10 h-10 rounded-lg font-bold text-sm transition-all border ";
-                            
-                            if (isCurrent) {
-                                btnClass += "border-blue-600 ring-2 ring-blue-200 dark:ring-blue-900 z-10 scale-110 bg-white dark:bg-gray-700 text-blue-900 dark:text-blue-100 shadow-md";
-                            } else if (isAnswered) {
-                                // If checked and wrong, show red. If just answered (in non-instant mode), show blue.
-                                if (settings.instantFeedback && checkedQuestions[idx]) {
-                                    btnClass += calculateIsCorrect(idx) 
-                                        ? "bg-green-600 text-white border-green-600" 
-                                        : "bg-red-500 text-white border-red-500";
-                                } else {
-                                    btnClass += "bg-blue-600 text-white border-blue-600 hover:bg-blue-700";
-                                }
-                            } else {
-                                btnClass += "bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 border-gray-200 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500 hover:text-gray-600";
-                            }
-
-                            return (
-                                <button key={idx} onClick={() => jumpToQuestion(idx)} className={btnClass}>
-                                    {idx + 1}
-                                </button>
-                            );
-                        })}
-                    </div>
-                     <button onClick={() => jumpToQuestion(currentIndex + 1)} disabled={currentIndex === questions.length - 1} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-30 transition-colors text-gray-600 dark:text-gray-300">
-                        →
-                    </button>
-                </div>
-            )}
+      {/* REPORT MODAL */}
+      <Modal isOpen={reportModalOpen} onClose={() => setReportModalOpen(false)} title="Rapportera Fråga" footer={<div className="flex gap-2 justify-end w-full"><button onClick={() => setReportModalOpen(false)} className="px-4 py-2 text-gray-500">Avbryt</button><button onClick={handleReportSubmit} disabled={isReporting} className="px-4 py-2 bg-red-600 text-white rounded font-bold">{isReporting ? '...' : 'Skicka'}</button></div>}>
+        <div className="space-y-4">
+            <p className="text-gray-700 dark:text-gray-300">Vad är fel med denna fråga?</p>
+            <textarea className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white h-32" placeholder="T.ex. Fel svar, dålig bild, stavfel..." value={reportReason} onChange={(e) => setReportReason(e.target.value)} />
         </div>
-    );
+      </Modal>
+
+      {/* TOP BAR */}
+      <div className="flex justify-between items-center mb-6">
+        <button onClick={onExit} className="text-sm font-bold text-gray-500 hover:text-red-500 transition-colors">Avsluta</button>
+        
+        {/* INDEXING BUTTON */}
+        <button onClick={() => setOverviewOpen(true)} className="flex items-center gap-2 px-3 py-1 bg-gray-100 dark:bg-gray-800 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+            <span className="text-sm font-mono font-bold text-gray-600 dark:text-gray-300">
+                Fråga {currentIndex + 1} / {questions.length}
+            </span>
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+            </svg>
+        </button>
+
+        <div className="w-12"></div> {/* Spacer for centering */}
+      </div>
+
+      <QuestionCard 
+        question={currentQ}
+        onAnswer={handleOptionSelect}
+        showFeedback={showFeedback}
+        selectedAnswer={currentState.selectedOption}
+        isBookmarked={isBookmarked}
+        onToggleBookmark={() => onToggleBookmark(currentQ.id)}
+        onReport={() => setReportModalOpen(true)}
+      />
+
+      {/* CONTROL BAR */}
+      <div className="fixed bottom-0 left-0 right-0 p-4 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 z-40">
+          <div className="max-w-3xl mx-auto flex gap-3 items-center">
+              
+              {/* PREVIOUS BUTTON (Only if backtracking allowed) */}
+              {settings.allowBacktracking && (
+                  <button 
+                    onClick={handlePrev} 
+                    disabled={currentIndex === 0}
+                    className="p-3 text-gray-500 hover:text-blue-600 disabled:opacity-30 disabled:hover:text-gray-500 transition-colors"
+                    title="Föregående fråga"
+                  >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                      </svg>
+                  </button>
+              )}
+
+              {/* MAIN ACTIONS */}
+              <div className="flex-1 flex gap-3">
+                  {!showFeedback ? (
+                      // WAITING FOR ANSWER
+                      <>
+                        <button onClick={handleNext} className="flex-1 py-3 text-gray-600 dark:text-gray-400 font-bold hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl transition-colors">
+                            Hoppa över
+                        </button>
+                        <button 
+                            onClick={handleConfirmAnswer}
+                            disabled={!currentState.selectedOption}
+                            className="flex-[2] py-3 bg-blue-600 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white rounded-xl font-bold shadow-lg hover:shadow-xl hover:bg-blue-700 transition-all disabled:cursor-not-allowed"
+                        >
+                            Svara
+                        </button>
+                      </>
+                  ) : (
+                      // NEXT BUTTON
+                      <button 
+                        onClick={handleNext}
+                        className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold text-lg shadow-xl hover:bg-blue-700 transition-all transform hover:-translate-y-1"
+                      >
+                          {currentIndex === questions.length - 1 ? "Se Resultat" : "Nästa Fråga →"}
+                      </button>
+                  )}
+              </div>
+          </div>
+      </div>
+    </div>
+  );
 }
