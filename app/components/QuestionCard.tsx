@@ -1,6 +1,6 @@
 'use client'
 
-import { Question } from '../page';
+import { Question } from '../lib/types';
 
 interface Props {
   question: Question;

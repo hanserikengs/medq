@@ -1,4 +1,4 @@
-export const APP_VERSION = "v0.9.2-beta";
+export const APP_VERSION = "v0.10.1-beta";
 
 // Higher number = More questions appear from this category
 export const CATEGORY_WEIGHTS: Record<string, number> = {
