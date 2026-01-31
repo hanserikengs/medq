@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import QuestionCard from './QuestionCard';
 import { ExamSettings } from './ExamSetup';
-import { Question } from '../page';
+import { Question } from '../lib/types';
 import { supabase } from '../lib/supabaseClient';
 
 interface Props {
