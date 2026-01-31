@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { useRouter } from 'next/navigation'
-import Modal from '../components/Modal' // Import the Modal
+import Modal from '../components/Modal'
 
 export default function ProfilePage() {
   const [loading, setLoading] = useState(true)
@@ -11,7 +11,6 @@ export default function ProfilePage() {
   const [displayName, setDisplayName] = useState('')
   const router = useRouter()
 
-  // Modal State
   const [modalOpen, setModalOpen] = useState(false);
   const [modalContent, setModalContent] = useState({ title: '', body: '' });
 
@@ -58,7 +57,6 @@ export default function ProfilePage() {
     try {
       setUpdating(true)
       const { data: { user } } = await supabase.auth.getUser()
-
       if (!user) throw new Error('No user')
 
       const updates = {
@@ -68,13 +66,9 @@ export default function ProfilePage() {
       }
 
       const { error } = await supabase.from('profiles').upsert(updates)
-
       if (error) throw error
       
-      // SUCCESS MODAL
       showModal("Sparat!", "Din profil har uppdaterats.");
-      
-      // Optional: Delay redirect so user can see modal
       setTimeout(() => router.push('/'), 1500);
 
     } catch (error) {
@@ -84,11 +78,9 @@ export default function ProfilePage() {
     }
   }
 
+  // --- DELETE ONLY STATS ---
   async function resetStats() {
-    // We can use the native confirm for destructive actions, or build a specific "Confirm Modal".
-    // For now, let's keep native confirm for SAFETY (harder to click accidentally), 
-    // but use Modal for the result.
-    const confirmReset = window.confirm("Är du säker? Detta raderar all din historik.");
+    const confirmReset = window.confirm("Är du säker? Detta raderar all din historik, men behåller ditt konto.");
     if (!confirmReset) return;
 
     try {
@@ -111,15 +103,34 @@ export default function ProfilePage() {
     }
   }
 
+  // --- DELETE ENTIRE ACCOUNT ---
+  async function deleteAccount() {
+    const confirmDelete = window.confirm("VARNING: Detta raderar ditt konto och all data permanent. Det går inte att ångra. Är du helt säker?");
+    if (!confirmDelete) return;
+
+    try {
+        setUpdating(true);
+        
+        // Call the RPC function we created in SQL
+        const { error } = await supabase.rpc('delete_own_account');
+
+        if (error) throw error;
+
+        alert("Ditt konto har raderats.");
+        await supabase.auth.signOut();
+        router.push('/login');
+        
+    } catch (error: any) {
+        showModal("Fel", "Kunde inte radera konto: " + error.message);
+    } finally {
+        setUpdating(false);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-gray-50 dark:bg-gray-900 p-8 flex items-center justify-center">
       
-      <Modal 
-        isOpen={modalOpen} 
-        onClose={() => setModalOpen(false)} 
-        title={modalContent.title}
-        footer={<button onClick={() => setModalOpen(false)} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">OK</button>}
-      >
+      <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title={modalContent.title} footer={<button onClick={() => setModalOpen(false)} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">OK</button>}>
         <p className="text-gray-700 dark:text-gray-300">{modalContent.body}</p>
       </Modal>
 
@@ -159,17 +170,27 @@ export default function ProfilePage() {
 
         <hr className="my-8 border-gray-200 dark:border-gray-700" />
 
-        <div className="bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border border-red-100 dark:border-red-900/50">
-            <h3 className="text-red-800 dark:text-red-400 font-bold mb-2">Återställ Data</h3>
-            <p className="text-sm text-red-600 dark:text-red-300 mb-4">
-                Detta raderar all sparad historik och nollställer dina framsteg.
-            </p>
-            <button
-                onClick={resetStats}
-                className="px-4 py-2 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700 transition-colors text-sm w-full sm:w-auto"
-            >
-                Nollställ Statistik
-            </button>
+        {/* DANGER ZONE */}
+        <div className="space-y-4">
+            <div className="bg-orange-50 dark:bg-orange-900/20 p-4 rounded-lg border border-orange-100 dark:border-orange-900/50">
+                <h3 className="text-orange-800 dark:text-orange-400 font-bold mb-2">Nollställ Statistik</h3>
+                <p className="text-sm text-orange-600 dark:text-orange-300 mb-4">
+                    Behåll kontot, men börja om med din statistik.
+                </p>
+                <button onClick={resetStats} className="px-4 py-2 bg-orange-600 text-white rounded-lg font-bold hover:bg-orange-700 transition-colors text-sm w-full">
+                    Nollställ Statistik
+                </button>
+            </div>
+
+            <div className="bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border border-red-100 dark:border-red-900/50">
+                <h3 className="text-red-800 dark:text-red-400 font-bold mb-2">Radera Konto</h3>
+                <p className="text-sm text-red-600 dark:text-red-300 mb-4">
+                    Radera kontot permanent. Går ej att ångra.
+                </p>
+                <button onClick={deleteAccount} className="px-4 py-2 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700 transition-colors text-sm w-full">
+                    Radera Konto
+                </button>
+            </div>
         </div>
       </div>
     </main>
